@@ -13,6 +13,7 @@ from google.adk.agents import llm_agent
 from google.adk import runners
 from google.adk.plugins import base_plugin
 
+from core.config import DEFAULT_LLM_MODEL
 from core.utils import chat_with_agent
 
 
@@ -130,7 +131,7 @@ Return exactly this JSON shape and nothing else:
 """
 
 safety_judge_agent = llm_agent.LlmAgent(
-    model="gemini-2.0-flash",
+    model=DEFAULT_LLM_MODEL,
     name="safety_judge",
     instruction=SAFETY_JUDGE_INSTRUCTION,
 )
