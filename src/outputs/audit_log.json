@@ -1,0 +1,16 @@
+[
+  {
+    "request_id": "4339b8e1-5920-489d-a245-7437797fb468",
+    "user_id": "demo",
+    "input": "email [REDACTED] [REDACTED]",
+    "started_at": "2026-08-07T03:17:09.836093+00:00",
+    "output_preview": "API [REDACTED] blocked",
+    "blocked": true,
+    "blocked_by": "output_guardrail",
+    "ended_at": "2026-08-07T03:17:09.836093+00:00",
+    "latency_ms": 0.0,
+    "judge_decision": {
+      "verdict": "BLOCK"
+    }
+  }
+]

@@ -1,0 +1,35 @@
+{
+  "total_requests": 10,
+  "blocked_requests": 6,
+  "block_rate": 0.6,
+  "rate_limit_hits": 7,
+  "judge_checks": 10,
+  "judge_fails": 4,
+  "judge_fail_rate": 0.4,
+  "thresholds": {
+    "block_rate_threshold": 0.5,
+    "rate_limit_hit_threshold": 5,
+    "judge_fail_rate_threshold": 0.3
+  },
+  "alerts": [
+    {
+      "metric": "block_rate",
+      "value": 0.6,
+      "threshold": 0.5,
+      "message": "Block rate exceeded threshold."
+    },
+    {
+      "metric": "rate_limit_hits",
+      "value": 7.0,
+      "threshold": 5.0,
+      "message": "Rate-limit hits exceeded threshold."
+    },
+    {
+      "metric": "judge_fail_rate",
+      "value": 0.4,
+      "threshold": 0.3,
+      "message": "Judge failure rate exceeded threshold."
+    }
+  ],
+  "snapshot_at": "2026-08-07T03:19:20.288022+00:00"
+}
