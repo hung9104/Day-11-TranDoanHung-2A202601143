@@ -5,6 +5,7 @@ Lab 11 — Part 2A: Input Guardrails
   TODO 3: Input Guardrail Plugin (ADK)
 """
 import re
+import unicodedata
 
 from google.genai import types
 from google.adk.plugins import base_plugin
@@ -32,26 +33,52 @@ from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
 # Regex is one signal, not the whole security boundary.
 # ============================================================
 
-def detect_injection(user_input: str) -> bool:
-    """Detect prompt injection patterns in user input.
+_INVISIBLE_CHARACTERS = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad]")
+_WHITESPACE = re.compile(r"\s+")
 
-    Args:
-        user_input: The user's message
+# Match attempts to replace the instruction hierarchy or extract privileged
+# context. Words such as "email" and "document" are deliberately not signals:
+# benign external banking content must remain usable.
+_INJECTION_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r"\bignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions?\b",
+    r"\byou\s+are\s+now\b",
+    r"\bsystem\s+(?:prompt|instructions?)\b",
+    r"\b(?:reveal|show|disclose)\s+(?:me\s+)?(?:your\s+|the\s+)?(?:hidden\s+|internal\s+)?(?:instructions?|prompt|secrets?)\b",
+    r"\bpretend\s+(?:that\s+)?you\s+are\b",
+    r"\bact\s+as\s+(?:a\s+|an\s+)?(?:fully\s+)?unrestricted\b",
+    r"\b(?:translate|encode|decode|convert|export|print|repeat)\b.{0,100}\b(?:system\s+prompt|hidden\s+instructions?|internal\s+(?:prompt|secrets?)|api\s+key)\b",
+    r"\b(?:bo\s+qua|phot\s+lo)\s+(?:tat\s+ca\s+|moi\s+)?(?:cac\s+)?(?:huong\s+dan|chi\s+dan|lenh)\b",
+    r"\b(?:tiet\s+lo|hien\s+thi|in\s+ra)\b.{0,100}\b(?:mat\s+khau|khoa\s+api|huong\s+dan\s+he\s+thong|system\s+prompt)\b",
+))
 
-    Returns:
-        True if injection detected, False otherwise
+
+def canonicalize_input(user_input: str) -> str:
+    """Canonicalize text before applying security rules.
+
+    Compatibility characters and invisible separators are collapsed, repeated
+    whitespace is normalised, and Vietnamese diacritics are removed so the same
+    rule handles accented and unaccented variants.
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
+    if not isinstance(user_input, str):
+        return ""
 
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
-            return True
-    return False
+    normalized = unicodedata.normalize("NFKC", user_input)
+    normalized = _INVISIBLE_CHARACTERS.sub("", normalized)
+    normalized = _WHITESPACE.sub(" ", normalized).strip().casefold()
+    decomposed = unicodedata.normalize("NFD", normalized)
+    return "".join(
+        char for char in decomposed if unicodedata.category(char) != "Mn"
+    ).replace("\u0111", "d")
 
+
+def detect_injection(user_input: str) -> bool:
+    """Detect direct or embedded prompt-injection commands."""
+    canonical = canonicalize_input(user_input)
+    if not canonical:
+        return False
+
+    # Scanning the whole message also catches commands embedded in email/RAG.
+    return any(pattern.search(canonical) for pattern in _INJECTION_PATTERNS)
 
 # ============================================================
 # TODO 2: Implement topic_filter()
@@ -63,24 +90,43 @@ def detect_injection(user_input: str) -> bool:
 # Return True if input should be BLOCKED (off-topic or blocked topic).
 # ============================================================
 
+_MAX_INPUT_LENGTH = 8_000
+_BANKING_TOPIC_ALIASES = (
+    "chuyen khoan", "rut tien", "gui tien", "the ngan hang",
+)
+
+
+def _contains_topic(text: str, topic: str) -> bool:
+    """Match a topic as complete words instead of a raw substring."""
+    canonical_topic = canonicalize_input(topic)
+    return re.search(
+        rf"(?<!\w){re.escape(canonical_topic)}(?!\w)", text
+    ) is not None
+
+
 def topic_filter(user_input: str) -> bool:
-    """Check if input is off-topic or contains blocked topics.
+    """Return True when input is unsafe, empty, too long, or off-topic."""
+    # Reject invalid and oversized messages before topic classification. The
+    # length limit also bounds normalization and regex work.
+    if not isinstance(user_input, str) or not user_input.strip():
+        return True
+    if len(user_input) > _MAX_INPUT_LENGTH:
+        return True
 
-    Args:
-        user_input: The user's message
+    canonical = canonicalize_input(user_input)
 
-    Returns:
-        True if input should be BLOCKED (off-topic or blocked topic)
-    """
-    input_lower = user_input.lower()
+    # Prohibited topics take precedence when a banking keyword is also present,
+    # for example: "hack my bank account".
+    if any(_contains_topic(canonical, topic) for topic in BLOCKED_TOPICS):
+        return True
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return True
-    # 2. If input doesn't contain any allowed topic -> return True
-    # 3. Otherwise -> return False (allow)
-
-    pass  # Replace with your implementation
-
+    # Require a complete banking term. Boundary matching avoids accidental
+    # substring matches such as "kill" inside a longer unrelated word.
+    has_banking_topic = any(
+        _contains_topic(canonical, topic)
+        for topic in (*ALLOWED_TOPICS, *_BANKING_TOPIC_ALIASES)
+    )
+    return not has_banking_topic
 
 # ============================================================
 # TODO 3: Implement InputGuardrailPlugin
@@ -100,6 +146,8 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         super().__init__(name="input_guardrail")
         self.blocked_count = 0
         self.total_count = 0
+        self.last_decision: dict | None = None
+        self.audit_events: list[dict] = []
 
     def _extract_text(self, content: types.Content) -> str:
         """Extract plain text from a Content object."""
@@ -132,14 +180,44 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 3. If both are False: return None (let message through)
+        canonical = canonicalize_input(text)
+        user_id = getattr(invocation_context, "user_id", None) or "anonymous"
 
-        pass  # Replace with your implementation
+        def record(decision: str, reason: str) -> None:
+            event = {
+                "layer": self.name,
+                "decision": decision,
+                "reason": reason,
+                "user_id": user_id,
+                "input_length": len(text),
+            }
+            self.last_decision = event
+            self.audit_events.append(event)
+
+        if detect_injection(canonical):
+            self.blocked_count += 1
+            record("blocked", "prompt_injection_detected")
+            return self._block_response(
+                "Request blocked by input_guardrail: the message contains "
+                "an unsafe instruction. Please ask a normal VinBank question."
+            )
+
+        if topic_filter(canonical):
+            self.blocked_count += 1
+            if not canonical:
+                reason = "empty_input"
+            elif len(text) > _MAX_INPUT_LENGTH:
+                reason = "input_too_long"
+            else:
+                reason = "topic_not_allowed"
+            record("blocked", reason)
+            return self._block_response(
+                "Request blocked by input_guardrail: I can only help with "
+                "safe VinBank banking questions."
+            )
+
+        record("allowed", "banking_topic_allowed")
+        return None
 
 
 # ============================================================
